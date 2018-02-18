@@ -1,0 +1,112 @@
+---
+title: "Human activity recognition (assignment write-up)"
+author: "Baranov Dmitry"
+date: 'February 2018'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require("dplyr")
+require("caret")
+require("doSNOW")
+
+```
+
+## Overview 
+
+In this write-up, I will build the prediction model to recognize human activities by data from accelerometers on the belt, forearm, arm, and measure of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+Many thanks to the authors of research for provided data set.  
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13). Stuttgart, Germany: ACM SIGCHI, 2013. Read more: http://groupware.les.inf.puc-rio.br/har#ixzz57SnmRkTD
+
+## Data loading  
+
+The training data for this project are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The has been loaded and placed in a folder with processing scripts.
+
+```{r dataLoading}
+data.raw <- read.csv("./pml-training.csv", header = TRUE, na.strings = c("","NA","#DIV/0!"))
+data <- tbl_df(data.raw)
+data
+```
+
+## Exploration of data  
+
+The quick review tells me that data has a lot of missing values. The following code gives me an estimation of the volume of missing values.
+```{r estimMissing}
+colSums(is.na(data))
+```  
+
+To impute the missing values I have selected to replace them by a mean value.
+```{r imputeMissing}
+for(cl in which(colSums(is.na(data))>0)) 
+    data[is.na(data[[cl]]), cl] <- mean(data[[cl]], na.rm = TRUE)
+```
+
+Now I will check the data for variables with zero and near zero variance.
+```{r zeroVarChk}
+zero <- nearZeroVar(data,saveMetrics=TRUE)
+zero
+```
+Here I see a lot of variables with zero or near zero variance. In spite of that a throwing variables away from the data is not always a good solution, I will try to build my model without variables with near zero variance. Also, I assume that a number of observations (x), user name and timestamp information won't increase the accuracy of prediction, so I will remove first 5 columns too.  
+```{r zeroVarRm}
+nonZeroValues <- names(data)[!zero$nzv]
+data <- data %>% select(nonZeroValues) %>% select(-c(1:5))
+```
+
+## Building a model  
+
+It is time to build the model. First, I will split the data to training/testing.
+```{r splitTrainTest}
+inTrain <- createDataPartition(y = data$classe, p = 0.7, list = FALSE)
+training <- data[inTrain,]
+testing <- data[-inTrain,]
+```
+
+I have chosen the generalized boosting model as one of the most accurate. I will run training with K-Fold cross-validation. Also, I will center and scale predictors. I will set 'verbose' parameter to FALSE to eliminate printed out information during the training.
+To improve training performance, I will run it in parallel mode by using 'doSNOW' package.
+
+```{r runModelTraining, cache=TRUE}
+# registring 3 clusters, as my computer has 4 cores
+registerDoSNOW(makeCluster(3, type = "SOCK"))
+# set seed
+set.seed(581321)
+# creating control object for performing cross validation
+ctrl <- trainControl(method = "cv", number = 10)
+# run training a model
+model.fit <- train(classe ~ ., data = training,
+                   method = 'gbm',
+                   preProcess = c('center','scale'),
+                   trControl = ctrl,
+                   verbose = FALSE)
+# print out the results
+model.fit
+```  
+On the following plot we can see the changing of model accuracy during tuning the model's prameters.
+```{r plotModel}
+plot(model.fit)
+```  
+For training data we have following confusion matrix.
+```{r confMtxTran}
+pred.train <- predict(model.fit, newdata = training)
+confMtx.Train <- confusionMatrix(pred.train, training$classe)
+confMtx.Train
+```  
+Here we can see the model accuracy is _`r confMtx.Train$overall['Accuracy']`_.  
+Now we can estimate the model with test data set.
+```{r confMtxTest}
+# predict on test data
+pred.test <- predict(model.fit, newdata = testing)
+# build confusion matrix
+confMtx.Test <- confusionMatrix(pred.test, testing$classe)
+confMtx.Test
+```
+
+For testing dataset, we also have pretty high accuracy _`r confMtx.Test$overall['Accuracy']`_.  
